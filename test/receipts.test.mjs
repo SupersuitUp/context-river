@@ -49,3 +49,18 @@ test("outlets do not share a file", () => {
   assert.equal(openReceipts(dir, "two").has("a:1"), false);
   assert.match(readFileSync(openReceipts(dir, "one").file, "utf8"), /"a:1"/);
 });
+
+test("a record written after a torn line is not glued onto it", () => {
+  const dir = tmp();
+  const r = openReceipts(dir, "o");
+  r.record("a:1", "published");
+  appendFileSync(r.file, '{"key":"a:2","sta');
+  const afterTear = openReceipts(dir, "o");
+  afterTear.record("a:3", "published");
+  afterTear.record("a:4", "removed");
+  const again = openReceipts(dir, "o");
+  assert.equal(again.has("a:1"), true);
+  assert.equal(again.has("a:3"), true);
+  assert.equal(again.removed("a:4"), true);
+  assert.equal(again.status("a:2"), null);
+});

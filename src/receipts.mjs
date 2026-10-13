@@ -8,8 +8,11 @@ export function openReceipts(dir, outletName) {
   mkdirSync(dir, { recursive: true });
   const file = join(dir, `${outletName}.jsonl`);
   const last = new Map();
+  let endsClean = true;
   if (existsSync(file)) {
-    for (const line of readFileSync(file, "utf8").split("\n")) {
+    const text = readFileSync(file, "utf8");
+    endsClean = text.endsWith("\n") || text === "";
+    for (const line of text.split("\n")) {
       if (!line.trim()) continue;
       try { const e = JSON.parse(line); if (e && e.key) last.set(e.key, e); } catch { /* torn line */ }
     }
@@ -22,7 +25,9 @@ export function openReceipts(dir, outletName) {
     keysWithStatus: (status) => [...last.values()].filter((e) => e.status === status).map((e) => e.key).sort(),
     record(key, status, extra = {}) {
       const entry = { ...extra, key, status, at: new Date().toISOString() };
-      appendFileSync(file, JSON.stringify(entry) + "\n");
+      // A torn last line must not swallow the next record: start on a fresh line first.
+      appendFileSync(file, (endsClean ? "" : "\n") + JSON.stringify(entry) + "\n");
+      endsClean = true;
       last.set(key, entry);
       return entry;
     },
