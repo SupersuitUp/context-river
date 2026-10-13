@@ -1,11 +1,14 @@
 // An outlet is one publication point, declared in one file. Everything about a destination
 // lives here so that a change to what qualifies is a change to one tested file.
+import { NAME, sourceNameProblem } from "./item.mjs";
+
 const BUNDLES = ["item", "day"];
 
 export function defineOutlet(spec = {}) {
   const problems = [];
-  if (typeof spec.name !== "string" || !/^[a-z0-9][a-z0-9-]*$/.test(spec.name)) problems.push("name must be lowercase letters, digits and dashes");
+  if (typeof spec.name !== "string" || !NAME.test(spec.name)) problems.push("name must be lowercase letters, digits and dashes");
   if (!Array.isArray(spec.sources) || !spec.sources.length || spec.sources.some((s) => typeof s !== "string")) problems.push("sources must be a non-empty list of source names");
+  else problems.push(...spec.sources.map(sourceNameProblem).filter(Boolean));
   if (typeof spec.qualifies !== "function") problems.push("qualifies must be a function");
   if (typeof spec.publish !== "function") problems.push("publish must be a function");
   const bundle = spec.bundle ?? "item";

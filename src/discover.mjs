@@ -4,6 +4,8 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { defineOutlet } from "./outlet.mjs";
+import { sourceNameProblem } from "./item.mjs";
 
 // Names that END in a secret word: `agentKey`, `api_key`, `TOKEN`. A substring match would also
 // refuse `keywords` and `keyboard`.
@@ -59,22 +61,34 @@ async function each(dirs, take) {
   return problems;
 }
 
-const isOutlet = (o) => o && typeof o.name === "string" && typeof o.qualifies === "function" && typeof o.publish === "function" && Array.isArray(o.sources) && Object.isFrozen(o);
+// One name, one file: a second file that claims a name already taken is a problem that names
+// both, because which of the two would run is otherwise an accident of the directory order.
+function claim(taken, kind, name, file) {
+  if (taken.has(name)) throw new Error(`${kind} name "${name}" is already declared in ${taken.get(name)}`);
+  taken.set(name, file);
+}
 
+// The default export is a defineOutlet result or the plain spec for one, so an outlet file two
+// workspaces share never has to import this package. Either way it is validated here.
 export async function loadOutlets(dirs) {
-  const outlets = [];
-  const problems = await each(dirs, (value) => {
-    if (!isOutlet(value)) throw new Error("the default export is not a defineOutlet result");
-    outlets.push(value);
+  const outlets = []; const taken = new Map();
+  const problems = await each(dirs, (value, file) => {
+    if (!value || typeof value !== "object") throw new Error("the default export is not an outlet");
+    const outlet = defineOutlet(value);
+    claim(taken, "outlet", outlet.name, file);
+    outlets.push(outlet);
   });
   return { outlets, problems };
 }
 
 export async function loadSources(dirs, config = {}) {
-  const sources = {};
-  const problems = await each(dirs, (value) => {
+  const sources = {}; const taken = new Map();
+  const problems = await each(dirs, (value, file) => {
     const source = typeof value === "function" ? value(config) : value;
     if (!source || typeof source.name !== "string" || typeof source.gather !== "function") throw new Error("the default export is not { name, gather }");
+    const named = sourceNameProblem(source.name);
+    if (named) throw new Error(named);
+    claim(taken, "source", source.name, file);
     sources[source.name] = source;
   });
   return { sources, problems };

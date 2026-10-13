@@ -24,3 +24,8 @@ test("writer must be a function when given", () => {
   assert.throws(() => defineOutlet({ ...ok, writer: "biographer" }), /writer/);
   assert.equal(typeof defineOutlet({ ...ok, writer: async () => {} }).writer, "function");
 });
+
+test("each source name is checked, and bundle is reserved", () => {
+  assert.throws(() => defineOutlet({ ...ok, sources: ["conversations", "Camera Roll"] }), /source name "Camera Roll"/);
+  assert.throws(() => defineOutlet({ ...ok, sources: ["bundle"] }), /reserved/);
+});

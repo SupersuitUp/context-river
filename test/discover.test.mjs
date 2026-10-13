@@ -96,3 +96,51 @@ test("a non-array repos, outletDirs or sourceDirs is an error naming the field",
     assert.throws(() => loadConfig(withConfig({ [f]: "some/dir" })), (e) => e instanceof Error && !(e instanceof TypeError) && e.message.includes(f), f);
   }
 });
+
+const OUTLET = (name) => `export default { name: ${JSON.stringify(name)}, sources: ["s"], qualifies: () => true, publish: async () => {} };\n`;
+
+test("loadOutlets accepts a plain spec with no import and validates it", async () => {
+  const d = join(ws(), "outlets"); mkdirSync(d, { recursive: true });
+  writeFileSync(join(d, "plain.mjs"), OUTLET("plain"));
+  writeFileSync(join(d, "wrong.mjs"), `export default { name: "wrong", sources: ["s"], qualifies: () => true, publish: "later" };\n`);
+  writeFileSync(join(d, "number.mjs"), "export default 5;\n");
+  const { outlets, problems } = await loadOutlets([d]);
+  assert.deepEqual(outlets.map((o) => o.name), ["plain"]);
+  assert.ok(Object.isFrozen(outlets[0]));
+  assert.equal(outlets[0].bundle, "item");
+  assert.match(problems.find((p) => p.file.endsWith("wrong.mjs")).reason, /publish must be a function/);
+  assert.ok(problems.some((p) => p.file.endsWith("number.mjs")));
+});
+
+test("two outlet files with one name: the first loads, the second is a problem naming both files", async () => {
+  const w = ws(); const d1 = join(w, "one"); const d2 = join(w, "two");
+  mkdirSync(d1); mkdirSync(d2);
+  writeFileSync(join(d1, "a.mjs"), OUTLET("book"));
+  writeFileSync(join(d1, "b.mjs"), OUTLET("book"));
+  writeFileSync(join(d2, "c.mjs"), OUTLET("book"));
+  const { outlets, problems } = await loadOutlets([d1, d2]);
+  assert.equal(outlets.length, 1);
+  assert.deepEqual(problems.map((p) => p.file), [join(d1, "b.mjs"), join(d2, "c.mjs")]);
+  for (const p of problems) assert.ok(p.reason.includes(join(d1, "a.mjs")) && /book/.test(p.reason), p.reason);
+});
+
+test("two source files with one name: the first loads, the second is a problem naming both files", async () => {
+  const d = join(ws(), "sources"); mkdirSync(d, { recursive: true });
+  writeFileSync(join(d, "a.mjs"), "export default { name: 'roll', gather: async () => ['first'] };");
+  writeFileSync(join(d, "b.mjs"), "export default { name: 'roll', gather: async () => ['second'] };");
+  const { sources, problems } = await loadSources([d]);
+  assert.deepEqual(await sources.roll.gather({}), ["first"]);
+  assert.equal(problems.length, 1);
+  assert.equal(problems[0].file, join(d, "b.mjs"));
+  assert.ok(problems[0].reason.includes(join(d, "a.mjs")));
+});
+
+test("a source file with a malformed or reserved name is a problem", async () => {
+  const d = join(ws(), "sources"); mkdirSync(d, { recursive: true });
+  writeFileSync(join(d, "a.mjs"), "export default { name: 'bundle', gather: async () => [] };");
+  writeFileSync(join(d, "b.mjs"), "export default { name: 'Camera Roll', gather: async () => [] };");
+  const { sources, problems } = await loadSources([d]);
+  assert.deepEqual(Object.keys(sources), []);
+  assert.match(problems[0].reason, /reserved/);
+  assert.match(problems[1].reason, /source name/);
+});
