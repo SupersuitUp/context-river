@@ -20,10 +20,16 @@ function front(text, key) {
 const NULLISH = new Set(["", "null", "~"]);
 const cleanKey = (k) => (k == null || NULLISH.has(String(k).trim()) ? null : String(k));
 
-// A date-only value gets the noon fallback; one that carries a time is kept as written.
+// A date-only value gets the noon fallback. A time with no offset is read as its written day
+// at noon too: the written date is the local day, and the day is what a bundle needs, while an
+// offset-less time of day cannot be placed. A value with an offset is kept as written.
 function instant(date) {
   if (!date) return null;
+  const day = date.slice(0, 10);
+  const parsed = new Date(`${day}T00:00:00Z`);
+  const validDay = /^\d{4}-\d{2}-\d{2}$/.test(day) && !Number.isNaN(parsed.getTime()) && parsed.toISOString().startsWith(day);
   if (/^\d{4}-\d{2}-\d{2}$/.test(date)) return `${date}T12:00:00Z`;
+  if (/\d:\d\d/.test(date) && !/(Z|GMT|UTC|[+-]\d{2}:?\d{2})$/i.test(date.trim())) return validDay ? `${day}T12:00:00Z` : null;
   return Number.isNaN(new Date(date).getTime()) ? null : date;
 }
 
@@ -36,7 +42,7 @@ function normalise(entry, readFile) {
   if (!entry || !entry.path) return null;
   const record = entry; // as filed, so an outlet can read fields this source knows nothing about
   entry = { ...entry, meetingKey: cleanKey(entry.meetingKey) };
-  const at = entry.start || instant(entry.date);
+  const at = instant(entry.start || entry.date);
   if (!at) return null;
   return {
     id: entry.meetingKey || entry.path,

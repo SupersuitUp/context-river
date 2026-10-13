@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fromPayload, conversationsSource } from "../src/sources/conversations.mjs";
+import { makeItem } from "../src/item.mjs";
 import { shippedSource } from "../src/sources/shipped.mjs";
 
 test("object entries become raw items keyed on the meeting key", () => {
@@ -92,8 +93,6 @@ test("matching single or double quotes are stripped from values", () => {
 test("a date that already carries a time is used as is, not given a second one", () => {
   const a = read(fm("date: 2026-10-12T09:00:00-05:00"))(["/w/a.md"]);
   assert.equal(a[0].at, "2026-10-12T09:00:00-05:00");
-  const b = read(fm("date: 2026-10-12 09:00"))(["/w/a.md"]);
-  assert.equal(b[0].at, "2026-10-12 09:00");
   assert.deepEqual(read(fm("date: sometime soon"))(["/w/a.md"]), []);
   assert.deepEqual(fromPayload({ filed: [{ path: "/a.md", date: "2026-10-12Tgarbage" }] }), []);
 });
@@ -107,4 +106,16 @@ test("the whole filed record is passed through, fields this source does not know
   assert.deepEqual(bare[0].data.record, { path: "/w/t/c.md", title: "Planning", date: "2026-10-11", meetingKey: "k9" });
   assert.equal(bare[0].data.path, "/w/t/c.md");
   assert.deepEqual(bare[0].data.sources, []);
+});
+
+test("a time with no offset is read as its written day at noon UTC, and still makes an item", () => {
+  const noon = "2026-10-12T12:00:00Z";
+  assert.equal(read(fm("date: \"2026-10-12 09:00\""))(["/w/a.md"])[0].at, noon);
+  assert.equal(read(fm("date: \"2026-10-12T09:00:00\""))(["/w/a.md"])[0].at, noon);
+  const [raw] = fromPayload({ filed: [{ path: "/a.md", start: "2026-10-12T21:15:00" }] });
+  assert.equal(raw.at, noon);
+  assert.doesNotThrow(() => makeItem({ ...raw, source: "conversations" }));
+  assert.equal(fromPayload({ filed: [{ path: "/a.md", start: "2026-10-12T21:15:00Z" }] })[0].at, "2026-10-12T21:15:00Z");
+  assert.equal(read(fm("date: 2026-10-12T09:00:00-05:00"))(["/w/a.md"])[0].at, "2026-10-12T09:00:00-05:00");
+  assert.deepEqual(fromPayload({ filed: [{ path: "/a.md", date: "2026-13-45 09:00" }] }), []);
 });
