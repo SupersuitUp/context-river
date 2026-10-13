@@ -144,13 +144,37 @@ test("a dirty marker or written record that cannot be written is a failed line",
   r.record = (key, status, ...rest) => { if (status === "dirty" || status === "written") throw new Error("disk full"); return real(key, status, ...rest); };
   const o = outlet({ bundle: "day", writer: async () => {} });
   const rep = await runOutlet(o, { sources: { s: src(raw("1")) }, receipts: r, ctx, now: NOON_13 });
-  assert.deepEqual(rep.published, ["s:1"]);
+  assert.deepEqual(rep.published, []); // the marker comes before the receipts, so none are written
   assert.deepEqual(rep.failed.map((f) => f.where), ["bundle:2026-10-12"]);
   real("bundle:2026-10-12", "dirty");
   const rep2 = await runOutlet(o, { sources: { s: src() }, receipts: r, ctx, now: NOON_13 });
   assert.deepEqual(rep2.failed.map((f) => f.where), ["bundle:2026-10-12"]);
   assert.match(rep2.failed[0].reason, /disk full/);
   assert.deepEqual(rep2.written, []);
+});
+
+test("a day whose marker could not be written is republished, so its writer still runs", async () => {
+  const r = receipts(); const real = r.record; let breakMarker = true; const sent = []; const wrote = [];
+  r.record = (key, ...rest) => { if (breakMarker && key.startsWith("bundle:")) throw new Error("disk full"); return real(key, ...rest); };
+  const o = outlet({ bundle: "day", publish: async (b) => { sent.push(b.key); }, writer: async ({ key }) => { wrote.push(key); } });
+  const first = await runOutlet(o, { sources: { s: src(raw("1")) }, receipts: r, ctx, now: NOON_13 });
+  assert.deepEqual(first.published, []);
+  assert.equal(r.has("s:1"), false);
+  assert.deepEqual(first.failed.map((f) => f.where), ["bundle:2026-10-12"]);
+  assert.match(first.failed[0].reason, /published but not receipted/);
+  breakMarker = false;
+  const second = await runOutlet(o, { sources: { s: src(raw("1")) }, receipts: r, ctx, now: NOON_13 });
+  assert.deepEqual(second.published, ["s:1"]);
+  assert.deepEqual(wrote, ["2026-10-12"]);
+  assert.deepEqual(second.written, ["2026-10-12"]);
+  assert.equal(sent.length, 2); // republished: the destination dedupes
+});
+
+test("a malformed publish result sets no day marker", async () => {
+  const r = receipts();
+  const o = outlet({ bundle: "day", publish: async () => ({ failed: "oops" }), writer: async () => {} });
+  await runOutlet(o, { sources: { s: src(raw("1")) }, receipts: r, ctx, now: NOON_13 });
+  assert.deepEqual(r.keysWithStatus("dirty"), []);
 });
 
 test("the same key twice in one run is published once", async () => {

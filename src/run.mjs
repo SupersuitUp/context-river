@@ -14,10 +14,12 @@ function tryRecord(receipts, report, where, ...args) {
   catch (e) { report.failed.push({ where, reason: `published but the receipt could not be written: ${msg(e)}` }); return false; }
 }
 
-// Same care for the day markers; a marker that cannot be written is retried next run.
-function tryMarker(receipts, report, marker, status) {
+// Same care for the day markers. The dirty marker is written BEFORE a bundle's items are
+// receipted, so a failure here leaves those items un-receipted and the next run republishes
+// them and tries the marker again; the written marker is retried because it stays dirty.
+function tryMarker(receipts, report, marker, status, note = "") {
   try { receipts.record(marker, status); return true; }
-  catch (e) { report.failed.push({ where: marker, reason: `the ${status} marker could not be written: ${msg(e)}` }); return false; }
+  catch (e) { report.failed.push({ where: marker, reason: `the ${status} marker could not be written: ${msg(e)}${note}` }); return false; }
 }
 
 export async function runOutlet(outlet, { sources, receipts, ctx = {}, dryRun = false, now = new Date() } = {}) {
@@ -62,13 +64,15 @@ export async function runOutlet(outlet, { sources, receipts, ctx = {}, dryRun = 
         continue;
       }
       const failed = new Map(list.map((f) => [f.key, f.reason]));
-      let landed = 0;
-      for (const key of keys) {
-        if (failed.has(key)) { report.failed.push({ where: key, reason: failed.get(key) }); continue; }
-        if (!tryRecord(receipts, report, key, key, "published", { bundle: bundle.key })) continue;
-        report.published.push(key); landed++;
+      const landing = keys.filter((key) => !failed.has(key));
+      for (const key of keys) if (failed.has(key)) report.failed.push({ where: key, reason: failed.get(key) });
+      // The marker comes first: receipting without it would make the next run skip these items
+      // as published and the day's writer would never be told the day changed.
+      if (landing.length && outlet.writer && outlet.bundle === "day"
+        && !tryMarker(receipts, report, BUNDLE + bundle.key, "dirty", "; the items were published but not receipted and will be retried next run")) continue;
+      for (const key of landing) {
+        if (tryRecord(receipts, report, key, key, "published", { bundle: bundle.key })) report.published.push(key);
       }
-      if (landed && outlet.writer && outlet.bundle === "day") tryMarker(receipts, report, BUNDLE + bundle.key, "dirty");
     }
 
     if (!dryRun && outlet.writer && outlet.bundle === "day") {
