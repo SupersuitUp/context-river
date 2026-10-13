@@ -10,12 +10,15 @@ import {
 
 const HELP = `context-river ${VERSION}
 
-  context-river run     [--workspace <dir>] [--outlet <name>] [--dry-run] [--json] [--strict]
+  context-river run     [--workspace <dir>] [--outlet <name>] [--payload <file>] [--stdin]
+                        [--dry-run] [--json] [--strict]
   context-river status  [--workspace <dir>] [--json]
   context-river remove  <outlet> <key> [--workspace <dir>]
 
 run     Gather from every source, let each outlet decide, publish, keep receipts.
-        A payload piped on stdin (or in CONTEXT_RIVER_PAYLOAD) feeds the conversations source.
+        A payload feeds the conversations source, and is read only when asked for: from
+        --payload <file>, else from stdin with --stdin, else from CONTEXT_RIVER_PAYLOAD.
+        --json prints one object: { reports, problems, notes }.
         Exits 0 whatever happened, so a hook that calls it cannot fail its caller.
         --strict exits 1 when anything failed.
 status  Outlets found, files that did not load, and receipt counts.
@@ -25,22 +28,40 @@ Outlets live in <workspace>/.agents/river/outlets/*.mjs, settings in
 <workspace>/.agents/river/config.json. Settings name environment variables; they never hold a secret.
 `;
 
+const VALUE_FLAGS = ["workspace", "outlet", "payload"];
+
 function parse(argv) {
-  const flags = {}; const rest = [];
+  const flags = {}; const rest = []; let usage = null;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === "--workspace" || a === "--outlet") flags[a.slice(2)] = argv[++i];
-    else if (a.startsWith("--")) flags[a.slice(2)] = true;
+    if (a.startsWith("--") && VALUE_FLAGS.includes(a.slice(2))) {
+      const v = argv[i + 1];
+      if (v === undefined || v.startsWith("--")) { usage ??= `${a} needs a value`; continue; }
+      flags[a.slice(2)] = v; i++;
+    } else if (a.startsWith("--")) flags[a.slice(2)] = true;
     else rest.push(a);
   }
-  return { flags, rest };
+  return { flags, rest, usage };
 }
 
-function readPayload(notes) {
-  let text = process.env.CONTEXT_RIVER_PAYLOAD || "";
-  if (!process.stdin.isTTY) { try { text = readFileSync(0, "utf8") || text; } catch { /* no stdin */ } }
+// A payload is read only when asked for: a file, stdin, or the environment. Reading stdin
+// unasked could block a hook forever on a pipe nobody closes.
+function readPayload(flags, notes) {
+  let text = ""; let from = "CONTEXT_RIVER_PAYLOAD";
+  if (flags.payload) {
+    from = flags.payload;
+    try { text = readFileSync(flags.payload, "utf8"); }
+    catch (e) { notes.push(`payload file ${flags.payload} could not be read (${e.message}), running without it`); return null; }
+  } else if (flags.stdin) {
+    from = "stdin";
+    try { text = readFileSync(0, "utf8"); }
+    catch (e) { notes.push(`payload on stdin could not be read (${e.message}), running without it`); return null; }
+  } else text = process.env.CONTEXT_RIVER_PAYLOAD || "";
   if (!text.trim()) return null;
-  try { return JSON.parse(text); } catch { notes.push("payload was not readable JSON, running without it"); return null; }
+  let value;
+  try { value = JSON.parse(text); } catch { notes.push("payload was not readable JSON, running without it"); return null; }
+  if (!value || typeof value !== "object" || Array.isArray(value)) { notes.push(`payload from ${from} was not a JSON object, running without it`); return null; }
+  return value;
 }
 
 function countReceipts(receipts) {
@@ -52,13 +73,23 @@ function countReceipts(receipts) {
   return counts;
 }
 
+// A refusal before any work: `run` stays quiet-exit-0 for a hook (1 with --strict), others exit 1.
+function fail(command, flags, message, stopped = false) {
+  if (command === "run" && flags.json) console.log(JSON.stringify({ reports: [], problems: [], notes: [], error: message }, null, 2));
+  else console.log(command === "run" && stopped ? `context-river stopped: ${message}` : message);
+  if (command === "run") return flags.strict ? 1 : 0;
+  return 1;
+}
+
 async function main() {
-  const { flags, rest } = parse(process.argv.slice(2));
+  const { flags, rest, usage } = parse(process.argv.slice(2));
   const [command, ...args] = rest;
   if (flags.version) { console.log(VERSION); return 0; }
   if (flags.help || !command) { console.log(HELP); return 0; }
+  if (usage) return fail(command, flags, usage);
   const workspace = resolve(flags.workspace || process.cwd());
-  const config = loadConfig(workspace);
+  let config;
+  try { config = loadConfig(workspace); } catch (e) { return fail(command, flags, e?.message ?? String(e), true); }
 
   if (command === "remove") {
     const [outlet, key] = args;
@@ -88,7 +119,7 @@ async function main() {
   if (command !== "run") { console.log(HELP); return 1; }
 
   const notes = [];
-  const payload = readPayload(notes);
+  const payload = readPayload(flags, notes);
   const custom = await loadSources(config.sourceDirs, config);
   const sources = {
     conversations: conversationsSource({ payload }),
@@ -102,7 +133,7 @@ async function main() {
     reports.push(await runOutlet(outlet, { sources, receipts: openReceipts(config.stateDir, outlet.name), ctx, dryRun: Boolean(flags["dry-run"]) }));
   }
 
-  if (flags.json) console.log(JSON.stringify(reports, null, 2));
+  if (flags.json) console.log(JSON.stringify({ reports, problems, notes }, null, 2));
   else {
     for (const n of notes) console.log(n);
     if (!outlets.length) console.log("no outlets");
