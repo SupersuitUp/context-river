@@ -22,6 +22,13 @@ function tryMarker(receipts, report, marker, status, note = "") {
   catch (e) { report.failed.push({ where: marker, reason: `the ${status} marker could not be written: ${msg(e)}${note}` }); return false; }
 }
 
+// A publish that failed must survive a source that will not return the item again (a hook
+// payload arrives once), so the item itself goes into the ledger and the next run feeds it back in.
+function keepPending(receipts, report, item, reason) {
+  try { receipts.record(itemKey(item), "pending", { item, reason }); }
+  catch (e) { report.failed.push({ where: itemKey(item), reason: `failed and could not be kept for the next run: ${msg(e)}` }); }
+}
+
 export async function runOutlet(outlet, { sources, receipts, ctx = {}, dryRun = false, now = new Date() } = {}) {
   const report = { outlet: outlet.name, gathered: 0, published: [], skipped: [], refused: [], failed: [], written: [], bundles: [] };
   const context = { timeZone: "UTC", ...ctx };
@@ -38,6 +45,13 @@ export async function runOutlet(outlet, { sources, receipts, ctx = {}, dryRun = 
     }
     report.gathered = items.length;
 
+    // Items left pending by an earlier run join this one; a fresh copy from a source wins.
+    const have = new Set(items.map(itemKey));
+    for (const raw of receipts.pendingItems()) {
+      try { const item = makeItem(raw); if (!have.has(itemKey(item))) items.push(item); }
+      catch (e) { report.failed.push({ where: "pending", reason: msg(e) }); }
+    }
+
     const fresh = [];
     const seen = new Set(); // one key is published once per run, however many sources return it
     for (const item of items) {
@@ -47,7 +61,13 @@ export async function runOutlet(outlet, { sources, receipts, ctx = {}, dryRun = 
       if (receipts.removed(key)) { report.skipped.push({ key, reason: "removed" }); continue; }
       if (receipts.has(key)) { report.skipped.push({ key, reason: "already published" }); continue; }
       const d = decide(outlet, item, context);
-      if (d.ok) fresh.push(item); else report.refused.push({ key, reason: d.reason });
+      if (d.ok) { fresh.push(item); continue; }
+      report.refused.push({ key, reason: d.reason });
+      // A pending item that no longer qualifies stops being retried.
+      if (!dryRun && receipts.status(key) === "pending") {
+        try { receipts.record(key, "refused", { reason: d.reason }); }
+        catch (e) { report.failed.push({ where: key, reason: `the refusal could not be recorded: ${msg(e)}` }); }
+      }
     }
 
     for (const bundle of bundleItems(fresh, outlet.bundle, context.timeZone)) {
@@ -55,17 +75,33 @@ export async function runOutlet(outlet, { sources, receipts, ctx = {}, dryRun = 
       report.bundles.push({ key: bundle.key, items: keys });
       if (dryRun) continue;
       let result;
-      try { result = await outlet.publish(bundle, context); } catch (e) { report.failed.push({ where: bundle.key, reason: msg(e) }); continue; }
-      // An adapter that answers in the wrong shape leaves us unable to know what landed, so
-      // receipt nothing (the next run retries; the destination dedupes) and keep going.
-      const list = result?.failed ?? [];
-      if (!Array.isArray(list) || list.some((f) => typeof f?.key !== "string")) {
-        report.failed.push({ where: bundle.key, reason: "the publish adapter returned a malformed result" });
+      try { result = await outlet.publish(bundle, context); }
+      catch (e) {
+        report.failed.push({ where: bundle.key, reason: msg(e) });
+        for (const item of bundle.items) keepPending(receipts, report, item, msg(e));
         continue;
       }
-      const failed = new Map(list.map((f) => [f.key, f.reason]));
-      const landing = keys.filter((key) => !failed.has(key));
-      for (const key of keys) if (failed.has(key)) report.failed.push({ where: key, reason: failed.get(key) });
+      // An adapter that answers in the wrong shape leaves us unable to know what landed, so
+      // nothing is receipted as published: the items stay pending and the destination dedupes.
+      const list = result?.failed ?? [];
+      const gone = result?.removed ?? [];
+      if (!Array.isArray(list) || list.some((f) => typeof f?.key !== "string") || !Array.isArray(gone) || gone.some((k) => typeof k !== "string")) {
+        const reason = "the publish adapter returned a malformed result";
+        report.failed.push({ where: bundle.key, reason });
+        for (const item of bundle.items) keepPending(receipts, report, item, reason);
+        continue;
+      }
+      // A destination can refuse an item for good; that outranks a failure reported for the same key.
+      const removed = new Set(gone);
+      const failed = new Map(list.filter((f) => !removed.has(f.key)).map((f) => [f.key, f.reason]));
+      const landing = keys.filter((key) => !failed.has(key) && !removed.has(key));
+      for (const item of bundle.items) {
+        const key = itemKey(item);
+        if (failed.has(key)) { report.failed.push({ where: key, reason: failed.get(key) }); keepPending(receipts, report, item, failed.get(key)); }
+        if (!removed.has(key)) continue;
+        try { receipts.record(key, "removed", { by: "destination" }); report.skipped.push({ key, reason: "removed by the destination" }); }
+        catch (e) { report.failed.push({ where: key, reason: `the removal could not be recorded: ${msg(e)}` }); }
+      }
       // The marker comes first: receipting without it would make the next run skip these items
       // as published and the day's writer would never be told the day changed.
       if (landing.length && outlet.writer && outlet.bundle === "day"

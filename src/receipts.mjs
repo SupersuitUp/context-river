@@ -23,6 +23,8 @@ export function openReceipts(dir, outletName) {
     has: (key) => last.get(key)?.status === "published",
     removed: (key) => last.get(key)?.status === "removed",
     keysWithStatus: (status) => [...last.values()].filter((e) => e.status === status).map((e) => e.key).sort(),
+    // Items whose publish failed are stored whole, because their source may never return them again.
+    pendingItems: () => [...last.values()].filter((e) => e.status === "pending" && e.item).map((e) => e.item),
     record(key, status, extra = {}) {
       const entry = { ...extra, key, status, at: new Date().toISOString() };
       // A torn last line must not swallow the next record: start on a fresh line first.

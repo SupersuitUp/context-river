@@ -64,3 +64,16 @@ test("a record written after a torn line is not glued onto it", () => {
   assert.equal(again.removed("a:4"), true);
   assert.equal(again.status("a:2"), null);
 });
+
+test("pendingItems lists the stored item of every key whose current status is pending", () => {
+  const dir = tmp();
+  const r = openReceipts(dir, "o");
+  r.record("a:1", "pending", { item: { source: "a", id: "1", at: "2026-10-12T15:00:00.000Z" }, reason: "down" });
+  r.record("a:2", "pending", { item: { source: "a", id: "2", at: "2026-10-12T16:00:00.000Z" }, reason: "down" });
+  r.record("a:3", "pending", { reason: "no item was stored" });
+  r.record("a:2", "published");
+  const again = openReceipts(dir, "o");
+  assert.deepEqual(again.pendingItems(), [{ source: "a", id: "1", at: "2026-10-12T15:00:00.000Z" }]);
+  assert.equal(again.has("a:1"), false);
+  assert.deepEqual(again.keysWithStatus("pending"), ["a:1", "a:3"]);
+});

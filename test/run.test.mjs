@@ -191,3 +191,140 @@ test("runOutlet resolves with a run line when the run itself blows up", async ()
   const rep = await runOutlet(outlet(), { sources: { s: src(raw("1")) }, receipts: r, ctx });
   assert.ok(rep.failed.some((f) => f.where === "run" && /receipts unreadable/.test(f.reason)));
 });
+
+test("a publish that throws keeps the item pending, and the next run publishes it though its source returns nothing", async () => {
+  const r = receipts(); let n = 0; const sent = [];
+  const o = outlet({ publish: async (b) => { if (n++ === 0) throw new Error("network down"); sent.push(b.items[0]); } });
+  const first = await runOutlet(o, { sources: { s: src(raw("1", "2026-10-12T15:00:00Z", { title: "Sync", people: ["ada"], data: { path: "/a.md" } })) }, receipts: r, ctx });
+  assert.deepEqual(first.published, []);
+  assert.equal(r.status("s:1"), "pending");
+  const reopened = openReceipts(join(r.file, ".."), "o"); // a later process, reading the ledger from disk
+  const second = await runOutlet(o, { sources: { s: src() }, receipts: reopened, ctx });
+  assert.deepEqual(second.published, ["s:1"]);
+  assert.equal(reopened.status("s:1"), "published");
+  assert.deepEqual({ ...sent[0] }, { source: "s", id: "1", at: "2026-10-12T15:00:00.000Z", kind: "s", title: "Sync", people: ["ada"], media: [], data: { path: "/a.md" } });
+  const third = await runOutlet(o, { sources: { s: src() }, receipts: reopened, ctx });
+  assert.deepEqual(third.published, []);
+  assert.equal(sent.length, 1);
+});
+
+test("an item returned in failed is kept pending with its reason and retried", async () => {
+  const r = receipts(); let n = 0;
+  const o = outlet({ bundle: "day", publish: async () => (n++ === 0 ? { failed: [{ key: "s:2", reason: "too large" }] } : undefined) });
+  await runOutlet(o, { sources: { s: src(raw("1"), raw("2")) }, receipts: r, ctx });
+  assert.equal(r.status("s:2"), "pending");
+  assert.deepEqual(r.pendingItems().map((i) => i.id), ["2"]);
+  const second = await runOutlet(o, { sources: { s: src() }, receipts: r, ctx });
+  assert.deepEqual(second.published, ["s:2"]);
+  assert.deepEqual(second.bundles, [{ key: "2026-10-12", items: ["s:2"] }]);
+});
+
+test("a malformed publish result keeps the bundle's items pending", async () => {
+  const r = receipts(); let n = 0;
+  const o = outlet({ publish: async () => (n++ === 0 ? { failed: "x" } : undefined) });
+  await runOutlet(o, { sources: { s: src(raw("1")) }, receipts: r, ctx });
+  assert.equal(r.status("s:1"), "pending");
+  assert.deepEqual((await runOutlet(o, { sources: { s: src() }, receipts: r, ctx })).published, ["s:1"]);
+});
+
+test("a freshly gathered copy wins over the pending one, and it is published once", async () => {
+  const r = receipts(); let n = 0; const sent = [];
+  const o = outlet({ publish: async (b) => { if (n++ === 0) throw new Error("down"); sent.push(...b.items.map((i) => i.title)); } });
+  await runOutlet(o, { sources: { s: src(raw("1", undefined, { title: "old" })) }, receipts: r, ctx });
+  const second = await runOutlet(o, { sources: { s: src(raw("1", undefined, { title: "new" })) }, receipts: r, ctx });
+  assert.deepEqual(sent, ["new"]);
+  assert.deepEqual(second.published, ["s:1"]);
+  assert.deepEqual(second.skipped, []);
+});
+
+test("a pending item that is now refused is recorded refused and not retried", async () => {
+  const r = receipts(); let open = true; let calls = 0;
+  const o = outlet({ qualifies: () => (open ? true : "the window closed"), publish: async () => { calls++; throw new Error("down"); } });
+  await runOutlet(o, { sources: { s: src(raw("1")) }, receipts: r, ctx });
+  open = false;
+  const second = await runOutlet(o, { sources: { s: src() }, receipts: r, ctx });
+  assert.deepEqual(second.refused, [{ key: "s:1", reason: "the window closed" }]);
+  assert.equal(r.status("s:1"), "refused");
+  assert.deepEqual(r.pendingItems(), []);
+  open = true;
+  const third = await runOutlet(o, { sources: { s: src() }, receipts: r, ctx });
+  assert.deepEqual(third.bundles, []);
+  assert.equal(calls, 1);
+});
+
+test("a dry run records nothing about a pending item", async () => {
+  const r = receipts(); let open = true;
+  const o = outlet({ qualifies: () => (open ? true : "no"), publish: async () => { throw new Error("down"); } });
+  await runOutlet(o, { sources: { s: src(raw("1")) }, receipts: r, ctx });
+  const dry = await runOutlet(o, { sources: { s: src() }, receipts: r, ctx, dryRun: true });
+  assert.deepEqual(dry.bundles, [{ key: "s:1", items: ["s:1"] }]);
+  open = false;
+  const refusedDry = await runOutlet(o, { sources: { s: src() }, receipts: r, ctx, dryRun: true });
+  assert.deepEqual(refusedDry.refused, [{ key: "s:1", reason: "no" }]);
+  assert.equal(r.status("s:1"), "pending");
+  const first = await runOutlet(outlet({ publish: async () => { throw new Error("down"); } }), { sources: { s: src(raw("9")) }, receipts: r, ctx, dryRun: true });
+  assert.deepEqual(first.failed, []);
+  assert.equal(r.status("s:9"), null);
+});
+
+test("a removed pending item is not fed back in", async () => {
+  const r = receipts(); let calls = 0;
+  const o = outlet({ publish: async () => { calls++; throw new Error("down"); } });
+  await runOutlet(o, { sources: { s: src(raw("1")) }, receipts: r, ctx });
+  r.record("s:1", "removed");
+  const second = await runOutlet(o, { sources: { s: src() }, receipts: r, ctx });
+  assert.deepEqual(second.bundles, []);
+  assert.equal(calls, 1);
+});
+
+test("publish may return removed keys: receipted as removed, skipped with a reason, never published", async () => {
+  const r = receipts(); const sent = [];
+  const o = outlet({ bundle: "day", publish: async (b) => { sent.push(b.items.map((i) => i.id)); return { removed: ["s:2", "s:elsewhere"] }; }, writer: async () => {} });
+  const rep = await runOutlet(o, { sources: { s: src(raw("1"), raw("2")) }, receipts: r, ctx });
+  assert.deepEqual(rep.published, ["s:1"]);
+  assert.deepEqual(rep.skipped, [{ key: "s:2", reason: "removed by the destination" }]);
+  assert.deepEqual(rep.failed, []);
+  assert.equal(r.removed("s:2"), true);
+  assert.equal(r.status("s:elsewhere"), null);
+  const second = await runOutlet(o, { sources: { s: src(raw("1"), raw("2")) }, receipts: r, ctx });
+  assert.deepEqual(second.skipped.find((x) => x.key === "s:2"), { key: "s:2", reason: "removed" });
+  assert.deepEqual(sent, [["1", "2"]]);
+});
+
+test("a key in both removed and failed is removed, and a pending item can be removed by the destination", async () => {
+  const r = receipts(); let n = 0;
+  const o = outlet({ publish: async () => { if (n++ === 0) throw new Error("down"); return { removed: ["s:1"], failed: [{ key: "s:1", reason: "also this" }] }; } });
+  await runOutlet(o, { sources: { s: src(raw("1")) }, receipts: r, ctx });
+  const second = await runOutlet(o, { sources: { s: src() }, receipts: r, ctx });
+  assert.deepEqual(second.published, []);
+  assert.deepEqual(second.failed, []);
+  assert.equal(r.removed("s:1"), true);
+  assert.deepEqual(r.pendingItems(), []);
+});
+
+test("a malformed removed is treated like a malformed failed", async () => {
+  for (const bad of [{ removed: "s:1" }, { removed: [null] }, { removed: [{ key: "s:1" }] }]) {
+    const r = receipts();
+    const rep = await runOutlet(outlet({ publish: async () => bad }), { sources: { s: src(raw("1")) }, receipts: r, ctx });
+    assert.match(rep.failed[0].reason, /malformed/);
+    assert.deepEqual(rep.published, []);
+    assert.equal(r.removed("s:1"), false);
+    assert.equal(r.has("s:1"), false);
+  }
+});
+
+test("a pending receipt that cannot be written is a failed line", async () => {
+  const r = receipts(); const real = r.record;
+  r.record = (key, status, ...rest) => { if (status === "pending") throw new Error("disk full"); return real(key, status, ...rest); };
+  const rep = await runOutlet(outlet({ publish: async () => { throw new Error("down"); } }), { sources: { s: src(raw("1")) }, receipts: r, ctx });
+  assert.deepEqual(rep.failed.map((f) => f.where), ["s:1", "s:1"]);
+  assert.match(rep.failed[1].reason, /disk full/);
+});
+
+test("the context is passed as given, and timeZone defaults to UTC", async () => {
+  const seen = [];
+  const o = outlet({ qualifies: (item, c) => { seen.push(c); return true; } });
+  await runOutlet(o, { sources: { s: src(raw("1")) }, receipts: receipts() });
+  await runOutlet(o, { sources: { s: src(raw("1")) }, receipts: receipts(), ctx: { timeZone: "America/Chicago", config: { pair: ["ada"] } } });
+  assert.deepEqual(seen, [{ timeZone: "UTC" }, { timeZone: "America/Chicago", config: { pair: ["ada"] } }]);
+});

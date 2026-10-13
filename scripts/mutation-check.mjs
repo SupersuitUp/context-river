@@ -10,7 +10,7 @@ const MUTATIONS = [
   { file: "src/run.mjs", find: 'if (receipts.removed(key)) { report.skipped.push({ key, reason: "removed" }); continue; }', replace: "", why: "a removed item is never republished" },
   { file: "src/run.mjs", find: 'if (receipts.has(key)) { report.skipped.push({ key, reason: "already published" }); continue; }', replace: "", why: "an item is published once" },
   { file: "src/run.mjs", find: 'if (seen.has(key)) { report.skipped.push({ key, reason: "duplicate in this run" }); continue; }', replace: "", why: "the same key twice in one run is published once" },
-  { file: "src/run.mjs", find: "if (!Array.isArray(list) || list.some((f) => typeof f?.key !== \"string\")) {", replace: "if (false) {", why: "a malformed publish result receipts nothing" },
+  { file: "src/run.mjs", find: "if (!Array.isArray(list) || list.some((f) => typeof f?.key !== \"string\") || !Array.isArray(gone) || gone.some((k) => typeof k !== \"string\")) {", replace: "if (false) {", why: "a malformed publish result receipts nothing" },
   { file: "src/run.mjs", find: "if (dryRun) continue;", replace: "", why: "a dry run publishes nothing" },
   { file: "src/run.mjs", find: "if (key >= today) continue; // the day is not over", replace: "", why: "the writer waits for the day to end" },
   { file: "src/decide.mjs", find: 'if (g) return { ok: false, reason: g };', replace: "", why: "a refusing gate refuses" },
