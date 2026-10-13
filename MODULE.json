@@ -1,0 +1,8 @@
+{
+  "name": "@supersuit/context-river",
+  "purpose": "Gather what arrived, decide what each publication point takes, publish it, keep the receipt.",
+  "interface": ["src/index.mjs", "bin/context-river.mjs"],
+  "owner": "Continental Works",
+  "check": "npm run check",
+  "slow": false
+}

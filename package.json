@@ -1,0 +1,21 @@
+{
+  "name": "@supersuit/context-river",
+  "version": "0.1.0",
+  "description": "The contract between what arrives on a machine and where it gets published: sources, outlets, gates and receipts",
+  "type": "module",
+  "bin": { "context-river": "bin/context-river.mjs" },
+  "exports": { ".": "./src/index.mjs", "./package.json": "./package.json" },
+  "files": ["bin/", "src/", "README.md", "CHANGELOG.md", "LICENSE"],
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "mutation-check": "node scripts/mutation-check.mjs",
+    "install-proof": "node scripts/install-proof.mjs",
+    "check:private-words": "node scripts/private-words.mjs",
+    "check": "npm test && npm run mutation-check && npm run check:private-words && npm run install-proof"
+  },
+  "engines": { "node": ">=20.11" },
+  "license": "MIT",
+  "publishConfig": { "access": "public" },
+  "repository": { "type": "git", "url": "git+https://github.com/SupersuitUp/context-river.git" },
+  "dependencies": {}
+}
