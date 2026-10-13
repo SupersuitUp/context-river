@@ -110,7 +110,12 @@ jobs:
       # package is the product, so it is tested before it is published, never after.
       - run: npm test
       - run: npm run mutation-check
+      # The mutation check breaks guards on purpose; this proves it put every one back.
+      - run: git diff --exit-code src bin
+      # The word list lives in a repository secret and nowhere in the repo.
       - run: npm run check:private-words
+        env:
+          PRIVATE_WORDS: ${{ secrets.PRIVATE_WORDS }}
       - run: npm run install-proof
 
       - name: Refuse a tag that disagrees with package.json
