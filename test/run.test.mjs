@@ -118,3 +118,52 @@ test("runOutlet never throws", async () => {
   const rep = await runOutlet(outlet(), { sources: null, receipts: receipts(), ctx });
   assert.ok(rep.failed.length >= 1);
 });
+
+test("a malformed publish result is reported, receipts nothing from that bundle, and the run continues", async () => {
+  for (const bad of [{ failed: "x" }, { failed: [null] }, { failed: [{ reason: "no key" }] }]) {
+    const r = receipts(); let n = 0; const wrote = [];
+    const o = outlet({ publish: async () => (n++ === 0 ? bad : undefined), writer: async (b) => { wrote.push(b.key); }, bundle: "item" });
+    const rep = await runOutlet(o, { sources: { s: src(raw("1"), raw("2")) }, receipts: r, ctx, now: NOON_13 });
+    assert.equal(r.has("s:1"), false);
+    assert.equal(rep.failed[0].where, "s:1");
+    assert.match(rep.failed[0].reason, /malformed/);
+    assert.deepEqual(rep.published, ["s:2"]);
+  }
+});
+
+test("a receipt that cannot be written is a failed line, not an escape", async () => {
+  const r = receipts(); const real = r.record;
+  r.record = (key, ...rest) => { if (key === "s:1") throw new Error("disk full"); return real(key, ...rest); };
+  const rep = await runOutlet(outlet(), { sources: { s: src(raw("1"), raw("2")) }, receipts: r, ctx });
+  assert.deepEqual(rep.published, ["s:2"]);
+  assert.deepEqual(rep.failed, [{ where: "s:1", reason: "published but the receipt could not be written: disk full" }]);
+});
+
+test("a dirty marker or written record that cannot be written is a failed line", async () => {
+  const r = receipts(); const real = r.record;
+  r.record = (key, status, ...rest) => { if (status === "dirty" || status === "written") throw new Error("disk full"); return real(key, status, ...rest); };
+  const o = outlet({ bundle: "day", writer: async () => {} });
+  const rep = await runOutlet(o, { sources: { s: src(raw("1")) }, receipts: r, ctx, now: NOON_13 });
+  assert.deepEqual(rep.published, ["s:1"]);
+  assert.deepEqual(rep.failed.map((f) => f.where), ["bundle:2026-10-12"]);
+  real("bundle:2026-10-12", "dirty");
+  const rep2 = await runOutlet(o, { sources: { s: src() }, receipts: r, ctx, now: NOON_13 });
+  assert.deepEqual(rep2.failed.map((f) => f.where), ["bundle:2026-10-12"]);
+  assert.match(rep2.failed[0].reason, /disk full/);
+  assert.deepEqual(rep2.written, []);
+});
+
+test("the same key twice in one run is published once", async () => {
+  const r = receipts(); const sent = [];
+  const o = outlet({ publish: async (b) => { sent.push(...b.items.map((i) => i.id)); } });
+  const rep = await runOutlet(o, { sources: { s: src(raw("1"), raw("1")) }, receipts: r, ctx });
+  assert.equal(sent.length, 1);
+  assert.deepEqual(rep.published, ["s:1"]);
+  assert.deepEqual(rep.skipped, [{ key: "s:1", reason: "duplicate in this run" }]);
+});
+
+test("runOutlet resolves with a run line when the run itself blows up", async () => {
+  const r = receipts(); r.removed = () => { throw new Error("receipts unreadable"); };
+  const rep = await runOutlet(outlet(), { sources: { s: src(raw("1")) }, receipts: r, ctx });
+  assert.ok(rep.failed.some((f) => f.where === "run" && /receipts unreadable/.test(f.reason)));
+});

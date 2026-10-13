@@ -7,6 +7,19 @@ import { bundleItems, dayOf } from "./bundle.mjs";
 const msg = (e) => e?.message ?? String(e);
 const BUNDLE = "bundle:";
 
+// A receipt that cannot be written must not abandon the rest of the run: say so and carry on.
+// Returns true when the record landed.
+function tryRecord(receipts, report, where, ...args) {
+  try { receipts.record(...args); return true; }
+  catch (e) { report.failed.push({ where, reason: `published but the receipt could not be written: ${msg(e)}` }); return false; }
+}
+
+// Same care for the day markers; a marker that cannot be written is retried next run.
+function tryMarker(receipts, report, marker, status) {
+  try { receipts.record(marker, status); return true; }
+  catch (e) { report.failed.push({ where: marker, reason: `the ${status} marker could not be written: ${msg(e)}` }); return false; }
+}
+
 export async function runOutlet(outlet, { sources, receipts, ctx = {}, dryRun = false, now = new Date() } = {}) {
   const report = { outlet: outlet.name, gathered: 0, published: [], skipped: [], refused: [], failed: [], written: [], bundles: [] };
   const context = { timeZone: "UTC", ...ctx };
@@ -24,8 +37,11 @@ export async function runOutlet(outlet, { sources, receipts, ctx = {}, dryRun = 
     report.gathered = items.length;
 
     const fresh = [];
+    const seen = new Set(); // one key is published once per run, however many sources return it
     for (const item of items) {
       const key = itemKey(item);
+      if (seen.has(key)) { report.skipped.push({ key, reason: "duplicate in this run" }); continue; }
+      seen.add(key);
       if (receipts.removed(key)) { report.skipped.push({ key, reason: "removed" }); continue; }
       if (receipts.has(key)) { report.skipped.push({ key, reason: "already published" }); continue; }
       const d = decide(outlet, item, context);
@@ -38,14 +54,21 @@ export async function runOutlet(outlet, { sources, receipts, ctx = {}, dryRun = 
       if (dryRun) continue;
       let result;
       try { result = await outlet.publish(bundle, context); } catch (e) { report.failed.push({ where: bundle.key, reason: msg(e) }); continue; }
-      const failed = new Map((result?.failed ?? []).map((f) => [f.key, f.reason]));
+      // An adapter that answers in the wrong shape leaves us unable to know what landed, so
+      // receipt nothing (the next run retries; the destination dedupes) and keep going.
+      const list = result?.failed ?? [];
+      if (!Array.isArray(list) || list.some((f) => typeof f?.key !== "string")) {
+        report.failed.push({ where: bundle.key, reason: "the publish adapter returned a malformed result" });
+        continue;
+      }
+      const failed = new Map(list.map((f) => [f.key, f.reason]));
       let landed = 0;
       for (const key of keys) {
         if (failed.has(key)) { report.failed.push({ where: key, reason: failed.get(key) }); continue; }
-        receipts.record(key, "published", { bundle: bundle.key });
+        if (!tryRecord(receipts, report, key, key, "published", { bundle: bundle.key })) continue;
         report.published.push(key); landed++;
       }
-      if (landed && outlet.writer && outlet.bundle === "day") receipts.record(BUNDLE + bundle.key, "dirty");
+      if (landed && outlet.writer && outlet.bundle === "day") tryMarker(receipts, report, BUNDLE + bundle.key, "dirty");
     }
 
     if (!dryRun && outlet.writer && outlet.bundle === "day") {
@@ -54,8 +77,9 @@ export async function runOutlet(outlet, { sources, receipts, ctx = {}, dryRun = 
         if (!marker.startsWith(BUNDLE)) continue;
         const key = marker.slice(BUNDLE.length);
         if (key >= today) continue; // the day is not over
-        try { await outlet.writer({ key }, context); receipts.record(marker, "written"); report.written.push(key); }
-        catch (e) { report.failed.push({ where: `writer ${key}`, reason: msg(e) }); }
+        try { await outlet.writer({ key }, context); }
+        catch (e) { report.failed.push({ where: `writer ${key}`, reason: msg(e) }); continue; }
+        if (tryMarker(receipts, report, marker, "written")) report.written.push(key);
       }
     }
   } catch (e) {
