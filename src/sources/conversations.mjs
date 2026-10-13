@@ -4,7 +4,28 @@
 // so identity falls back to the path.
 import { readFileSync } from "node:fs";
 
-const front = (text, key) => (text.match(new RegExp(`^${key}:\\s*"?([^"\\n]*)"?\\s*$`, "m")) || [])[1] || null;
+// Only the leading --- block counts: a "date:" line in the body is prose, not metadata.
+const block = (text) => (text.match(/^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/) || [])[1] ?? null;
+
+// One value from the block. [ \t] rather than \s so an empty value cannot swallow the next line.
+function front(text, key) {
+  const inner = block(text);
+  if (inner === null) return null;
+  const m = inner.match(new RegExp(`^${key}:[ \\t]*(.*?)[ \\t]*$`, "m"));
+  const v = (m?.[1] ?? "").replace(/^(["'])(.*)\1$/, "$2");
+  return v === "" ? null : v;
+}
+
+// "null" and "~" are how YAML writes nothing; they identify no meeting.
+const NULLISH = new Set(["", "null", "~"]);
+const cleanKey = (k) => (k == null || NULLISH.has(String(k).trim()) ? null : String(k));
+
+// A date-only value gets the noon fallback; one that carries a time is kept as written.
+function instant(date) {
+  if (!date) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(date)) return `${date}T12:00:00Z`;
+  return Number.isNaN(new Date(date).getTime()) ? null : date;
+}
 
 function normalise(entry, readFile) {
   if (typeof entry === "string") {
@@ -13,7 +34,8 @@ function normalise(entry, readFile) {
     entry = { path: entry, title: front(text, "title"), date: front(text, "date"), meetingKey: front(text, "meeting_key") };
   }
   if (!entry || !entry.path) return null;
-  const at = entry.start || (entry.date ? `${entry.date}T12:00:00Z` : null);
+  entry = { ...entry, meetingKey: cleanKey(entry.meetingKey) };
+  const at = entry.start || instant(entry.date);
   if (!at) return null;
   return {
     id: entry.meetingKey || entry.path,

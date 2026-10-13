@@ -50,3 +50,49 @@ test("shipped reads commits per repo and survives a broken repo", async () => {
   assert.deepEqual(out[0], { id: "abc", at: "2026-10-12T15:00:00-05:00", kind: "commit", title: "Ship the thing", data: { repo: "/good" } });
   assert.ok(calls[1].includes("--since=2026-10-10T00:00:00.000Z"));
 });
+
+const fm = (body, text = "body") => `---\n${body}\n---\n${text}`;
+const read = (content) => (entries) => fromPayload({ filed: entries }, { readFile: () => content });
+
+test("frontmatter meeting_key null, ~ or empty is never an id; identity falls back to the path", () => {
+  for (const v of ["null", "~", "", '"null"']) {
+    const out = read(fm(`date: 2026-10-12\nmeeting_key: ${v}`))(["/w/a.md", "/w/b.md"]);
+    assert.deepEqual(out.map((r) => r.id), ["/w/a.md", "/w/b.md"], `meeting_key: ${v}`);
+    assert.equal(out[0].data.meetingKey, null);
+  }
+});
+
+test("an object entry's meetingKey of 'null' or '~' is a null key", () => {
+  const out = fromPayload({ filed: [{ path: "/a.md", date: "2026-10-12", meetingKey: "null" }, { path: "/b.md", date: "2026-10-12", meetingKey: "~" }] });
+  assert.deepEqual(out.map((r) => r.id), ["/a.md", "/b.md"]);
+  assert.deepEqual(out.map((r) => r.data.meetingKey), [null, null]);
+});
+
+test("an empty frontmatter value reads as null, never the next line", () => {
+  const out = read(fm("title: T\ndate:\nparticipants: [a]"))(["/w/a.md"]);
+  assert.deepEqual(out, []); // no date, so dropped
+  const keyed = read(fm("date: 2026-10-12\nmeeting_key:\nparticipants: [a]"))(["/w/a.md"]);
+  assert.equal(keyed[0].id, "/w/a.md");
+});
+
+test("only the frontmatter block is read; a body line or a missing block yields nulls", () => {
+  const body = read(fm("title: T", "date: 2026-10-12\nmeeting_key: zzz"))(["/w/a.md"]);
+  assert.deepEqual(body, []);
+  assert.deepEqual(read("date: 2026-10-12\nmeeting_key: zzz\nno fences here")(["/w/a.md"]), []);
+});
+
+test("matching single or double quotes are stripped from values", () => {
+  const out = read(fm("title: 'Planning'\ndate: '2026-10-11'\nmeeting_key: \"k9\""))(["/w/a.md"]);
+  assert.equal(out[0].title, "Planning");
+  assert.equal(out[0].at, "2026-10-11T12:00:00Z");
+  assert.equal(out[0].id, "k9");
+});
+
+test("a date that already carries a time is used as is, not given a second one", () => {
+  const a = read(fm("date: 2026-10-12T09:00:00-05:00"))(["/w/a.md"]);
+  assert.equal(a[0].at, "2026-10-12T09:00:00-05:00");
+  const b = read(fm("date: 2026-10-12 09:00"))(["/w/a.md"]);
+  assert.equal(b[0].at, "2026-10-12 09:00");
+  assert.deepEqual(read(fm("date: sometime soon"))(["/w/a.md"]), []);
+  assert.deepEqual(fromPayload({ filed: [{ path: "/a.md", date: "2026-10-12Tgarbage" }] }), []);
+});
