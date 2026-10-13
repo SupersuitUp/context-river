@@ -1,16 +1,10 @@
 # Publish @supersuit/context-river to npm through OIDC trusted publishing.
 #
-# WHY THIS EXISTS. Publishing by hand needed a one-time password in a browser on every
-# release, which put a human round trip in front of every fix reaching the wikis that
-#
-# It is also the direction npm is forcing. Their own banner: "npm tokens that bypass 2FA
-# are being restricted, account changes (Aug 2026) and direct publishing (Jan 2027)."
-#
-# Stamped by the publish-npm-package skill from the workflow every @supersuit package ships
-# through, where every comment below was earned. Add an install and build step above
-# `npm test` if this package has dependencies or a build.
-# A long-lived automation token in a secret would work today and stop working on a date
-# somebody else picked.
+# WHY THIS EXISTS. Publishing by hand needs a one-time password in a browser on every
+# release, which puts a human round trip in front of every fix reaching the packages that
+# consume this one. npm is also restricting tokens that bypass 2FA, so a long-lived
+# automation token in a secret would work today and stop working on a date somebody else
+# picked.
 #
 # HOW THE TRUST WORKS. There is no token here and no NODE_AUTH_TOKEN, deliberately.
 # GitHub mints a short-lived OIDC identity for this workflow, npm verifies it against the
@@ -50,8 +44,8 @@ jobs:
     #     npm trust github @supersuit/context-river --file publish.yml \
     #       --repo SupersuitUp/context-river --allow-publish --allow-stage-publish
     # and `npm trust list @supersuit/context-river` shows no environment, so any value here
-    # and which has published every release through this exact shape. If a record is ever
-    # given an environment, this line must change to match it in the same sitting.
+    # passes. `blank` is kept as a neutral name. If a record is ever given an environment,
+    # this line must change to match it in the same sitting.
     #
     # The FIRST publish of a new package cannot go through this workflow: npm attaches a
     # trusted publisher to an existing package, so the first version is published by hand (web 2FA)
@@ -62,7 +56,7 @@ jobs:
 
       # NO `registry-url` HERE, AND THAT IS THE WHOLE TRICK.
       #
-      # Every published example of this workflow sets `registry-url: https://registry.npmjs.org`,
+      # Setting `registry-url: https://registry.npmjs.org` is common in publish workflows,
       # and with OIDC it is the thing that breaks the publish. setup-node responds to that
       # option by writing an .npmrc containing
       #     //registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}
@@ -73,6 +67,7 @@ jobs:
       # The rejection is a 404 rather than a 401, because npm answers an unauthenticated PUT
       # with "not found" so that private package names cannot be probed. So the failure reads
       # as "the package does not exist" for a package that plainly does, and says nothing
+      # about auth at all.
       #
       # Omitting it leaves npm with no configured credential, which is the state that makes it
       # perform the OIDC exchange. The default registry is already registry.npmjs.org.
@@ -82,10 +77,10 @@ jobs:
 
       # PINNED TO 11.x, NOT `npm@latest`.
       #
-      # OIDC trusted publishing landed in npm 11.5.1. Writing `npm@latest` here picked up
-      # npm 12.0.2 on 2026-09-15, which did not perform the exchange at all: it went straight
-      # to ENEEDAUTH, "you need to authorize this machine using npm login", as though trusted
-      # publishing did not exist. Reaching for the newest npm to be safe is what broke it.
+      # OIDC trusted publishing landed in npm 11.5.1. Floating to `npm@latest` once picked up
+      # npm 12.0.2, which did not perform the exchange at all: it went straight to ENEEDAUTH,
+      # "you need to authorize this machine using npm login", as though trusted publishing
+      # did not exist. Reaching for the newest npm to be safe is what broke it.
       #
       # Raise this deliberately, after checking that the new major still does the exchange,
       # rather than by floating it.
@@ -101,7 +96,7 @@ jobs:
         run: |
           if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] || [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
             echo "No OIDC identity available to this job."
-            echo "The workflow needs `permissions: id-token: write`, and a fork PR never gets one."
+            echo "The workflow needs 'permissions: id-token: write', and a fork PR never gets one."
             exit 1
           fi
           echo "OIDC identity present"
@@ -112,8 +107,9 @@ jobs:
       - run: npm run mutation-check
       # The mutation check breaks guards on purpose; this proves it put every one back.
       - run: git diff --exit-code src bin
-      # The word list lives in a repository secret and nowhere in the repo.
-      - run: npm run check:private-words
+      # The word list lives in a repository secret and nowhere in the repo. --require makes a
+      # missing secret fail the release instead of skipping the scan.
+      - run: node scripts/private-words.mjs --require
         env:
           PRIVATE_WORDS: ${{ secrets.PRIVATE_WORDS }}
       - run: npm run install-proof

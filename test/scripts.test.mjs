@@ -7,10 +7,10 @@ import { spawnSync } from "node:child_process";
 
 const ROOT = join(import.meta.dirname, "..");
 const SCRIPT = join(ROOT, "scripts", "private-words.mjs");
-const check = (env) => {
+const check = (env, args = []) => {
   const clean = { ...process.env };
   delete clean.PRIVATE_WORDS; delete clean.PRIVATE_WORDS_FILE;
-  return spawnSync(process.execPath, [SCRIPT], { encoding: "utf8", env: { ...clean, ...env } });
+  return spawnSync(process.execPath, [SCRIPT, ...args], { encoding: "utf8", env: { ...clean, ...env } });
 };
 // A word this repo is known to contain (the CLI tests use it as an unknown command), standing
 // in for a private one. Built at run time so this file adds no second place to keep in step.
@@ -21,6 +21,16 @@ test("the private-words check is skipped, visibly, when no list is given", () =>
   const r = check({});
   assert.equal(r.status, 0);
   assert.equal(r.stdout.trim(), "private-words: skipped, no list (set PRIVATE_WORDS_FILE or PRIVATE_WORDS)");
+});
+
+test("--require turns a missing list into a failure, and a present list is unaffected", () => {
+  const r = check({}, ["--require"]);
+  assert.equal(r.status, 1);
+  assert.equal(r.stdout.trim(), "private-words: no list, and this run requires one (set the PRIVATE_WORDS secret)");
+  assert.equal(check({ PRIVATE_WORDS: " , " }, ["--require"]).status, 1);
+  const ok = check({ PRIVATE_WORDS: ABSENT[0] }, ["--require"]);
+  assert.equal(ok.status, 0);
+  assert.match(ok.stdout, /^no private words in \d+ files$/m);
 });
 
 test("a listed word is found by substring and without regard to case, and the hit never prints it", () => {

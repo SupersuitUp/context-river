@@ -12,6 +12,11 @@ const SCANNED = ["src", "bin", "test", "scripts", ".github", "README.md", "CHANG
 const raw = process.env.PRIVATE_WORDS_FILE ? readFileSync(process.env.PRIVATE_WORDS_FILE, "utf8") : process.env.PRIVATE_WORDS ?? "";
 const words = [...new Set(raw.split(/[\n,]/).map((w) => w.trim().toLowerCase()).filter(Boolean))];
 if (!words.length) {
+  // A release must not ship unscanned, so a publish run passes --require.
+  if (process.argv.includes("--require")) {
+    console.log("private-words: no list, and this run requires one (set the PRIVATE_WORDS secret)");
+    process.exit(1);
+  }
   console.log("private-words: skipped, no list (set PRIVATE_WORDS_FILE or PRIVATE_WORDS)");
   process.exit(0);
 }
