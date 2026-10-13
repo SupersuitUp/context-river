@@ -4,8 +4,9 @@ import { fromPayload, conversationsSource } from "../src/sources/conversations.m
 import { shippedSource } from "../src/sources/shipped.mjs";
 
 test("object entries become raw items keyed on the meeting key", () => {
-  const out = fromPayload({ filed: [{ path: "/w/t/a.md", title: "Sync", date: "2026-10-12", meetingKey: "k1", attendees: ["Ada", "Grace"], participants: ["ada", "grace"], sources: [{ type: "meet_cloud" }] }] });
-  assert.deepEqual(out, [{ id: "k1", at: "2026-10-12T12:00:00Z", title: "Sync", people: ["ada", "grace"], data: { path: "/w/t/a.md", meetingKey: "k1", sources: [{ type: "meet_cloud" }] } }]);
+  const entry = { path: "/w/t/a.md", title: "Sync", date: "2026-10-12", meetingKey: "k1", attendees: ["Ada", "Grace"], participants: ["ada", "grace"], sources: [{ type: "meet_cloud" }] };
+  const out = fromPayload({ filed: [entry] });
+  assert.deepEqual(out, [{ id: "k1", at: "2026-10-12T12:00:00Z", title: "Sync", people: ["ada", "grace"], data: { path: "/w/t/a.md", meetingKey: "k1", sources: [{ type: "meet_cloud" }], record: entry } }]);
 });
 
 test("a null meeting key falls back to the path, never to a shared null", () => {
@@ -95,4 +96,15 @@ test("a date that already carries a time is used as is, not given a second one",
   assert.equal(b[0].at, "2026-10-12 09:00");
   assert.deepEqual(read(fm("date: sometime soon"))(["/w/a.md"]), []);
   assert.deepEqual(fromPayload({ filed: [{ path: "/a.md", date: "2026-10-12Tgarbage" }] }), []);
+});
+
+test("the whole filed record is passed through, fields this source does not know included", () => {
+  const entry = { path: "/a.md", date: "2026-10-12", meetingKey: "~", duration: 1800, summary: "s", custom: { room: "blue" } };
+  const out = fromPayload({ filed: [entry] });
+  assert.equal(out[0].data.record, entry);
+  assert.equal(out[0].data.meetingKey, null); // the cleaned key stays where it was; the record is as filed
+  const bare = fromPayload({ filed: ["/w/t/c.md"] }, { readFile: () => '---\ntitle: "Planning"\ndate: 2026-10-11\nmeeting_key: k9\n---\nbody' });
+  assert.deepEqual(bare[0].data.record, { path: "/w/t/c.md", title: "Planning", date: "2026-10-11", meetingKey: "k9" });
+  assert.equal(bare[0].data.path, "/w/t/c.md");
+  assert.deepEqual(bare[0].data.sources, []);
 });

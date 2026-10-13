@@ -34,6 +34,7 @@ function normalise(entry, readFile) {
     entry = { path: entry, title: front(text, "title"), date: front(text, "date"), meetingKey: front(text, "meeting_key") };
   }
   if (!entry || !entry.path) return null;
+  const record = entry; // as filed, so an outlet can read fields this source knows nothing about
   entry = { ...entry, meetingKey: cleanKey(entry.meetingKey) };
   const at = entry.start || instant(entry.date);
   if (!at) return null;
@@ -42,7 +43,7 @@ function normalise(entry, readFile) {
     at,
     title: entry.title ?? null,
     people: entry.participants ?? entry.attendees ?? [],
-    data: { path: entry.path, meetingKey: entry.meetingKey ?? null, sources: entry.sources ?? [] },
+    data: { path: entry.path, meetingKey: entry.meetingKey ?? null, sources: entry.sources ?? [], record },
   };
 }
 
