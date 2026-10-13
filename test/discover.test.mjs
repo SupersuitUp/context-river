@@ -64,3 +64,35 @@ test("the public surface is complete", () => {
     assert.ok(name in api, `${name} is exported`);
   }
 });
+
+const withConfig = (text) => {
+  const w = ws();
+  mkdirSync(join(w, ".agents/river"), { recursive: true });
+  writeFileSync(join(w, ".agents/river/config.json"), typeof text === "string" ? text : JSON.stringify(text));
+  return w;
+};
+
+test("harmless keys that merely contain key/token are fine; names ending in a secret word are refused", () => {
+  const ok = { keywords: "a, b", tokenizer: "bpe", keyboard: "us", secretary: "x" };
+  assert.deepEqual({ ...loadConfig(withConfig(ok)) }.keywords, "a, b");
+  for (const k of ["agentKey", "api_key", "TOKEN", "clientSecret", "PASSWORD"]) {
+    assert.throws(() => loadConfig(withConfig({ [k]: "abc" })), /never holds a secret/, k);
+  }
+});
+
+test("a secret nested in an object or array is refused, and the error names the path", () => {
+  assert.throws(() => loadConfig(withConfig({ auth: { token: "x" } })), /auth\.token/);
+  assert.throws(() => loadConfig(withConfig({ list: [{ deep: { apiKey: "x" } }] })), /list\.0\.deep\.apiKey/);
+  assert.equal(loadConfig(withConfig({ auth: { tokenEnv: "T" } })).auth.tokenEnv, "T");
+});
+
+test("a malformed config.json throws an error naming the file and the parser's message", () => {
+  const w = withConfig("{ not json");
+  assert.throws(() => loadConfig(w), (e) => e instanceof Error && !(e instanceof SyntaxError) && e.message.includes(join(w, ".agents/river/config.json")) && /JSON|Expected|position/i.test(e.message));
+});
+
+test("a non-array repos, outletDirs or sourceDirs is an error naming the field", () => {
+  for (const f of ["repos", "outletDirs", "sourceDirs"]) {
+    assert.throws(() => loadConfig(withConfig({ [f]: "some/dir" })), (e) => e instanceof Error && !(e instanceof TypeError) && e.message.includes(f), f);
+  }
+});
